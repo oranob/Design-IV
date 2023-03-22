@@ -1,0 +1,301 @@
+#include <WiFiNINA.h>
+#include <afstandssensor.h>
+
+char ssid[] = "LAPTOP-ETF87F9D 0946";
+char pass[] = "0i971L1;";
+
+WiFiClient client1; // Start&Stop + buggy speed
+WiFiClient client2; // object speed
+
+IPAddress server(10,6,14,141);
+
+void changeright();
+void changeleft();
+float buggyspeed(unsigned long timenew, float distanceq);
+
+double kp = -31;
+double ki = 0;
+double kd = -4.5;
+
+const int LEYE = 10;
+const int REYE = 9;
+
+const int LWPWM = 16;
+const int LWLOW = 7;
+const int LWHIGH = 4;
+
+const int RWLOW = 6;
+const int RWHIGH = 5;
+const int RWPWM = 17;
+
+const int trig = 21;
+const int echo = 20;
+
+int time;
+int distance;
+int tot_time;
+int n_speed = 0;
+int speed_modified;
+int distance2;
+float obj_speed = 0;
+
+unsigned long prevTime = 0;
+double elapsedTime;
+double error;
+double lastError;
+double actualdistance;
+double cumError, rateError;
+
+AfstandsSensor afstandssensor(trig, echo);
+
+const double desired_distance = 15 ;
+const double setdistance = (desired_distance - (desired_distance/2)); 
+
+int C = 'A'; 
+char message = 'o'; 
+
+int LENC;
+int RENC;
+
+float countright = 0;
+float countleft = 0;
+float rotationright = 0;
+float rotationleft = 0;
+float totaldistance = 0;
+float currentdistance = 0;
+float prevdistance = 0;
+unsigned long totaltime = 0;
+unsigned long currenttime = 0;
+unsigned long previoustime = 0;
+float currentspeed;
+unsigned long interval = 1000;
+unsigned long p1time = 0;
+
+void setup() {  
+
+  Serial.begin(9600);
+
+  WiFi.begin(ssid, pass);
+  client1.connect(server,5000);
+  client2.connect(server,5200);     
+  IPAddress ip = WiFi.localIP();
+  Serial.print("IP Address:");
+  Serial.println(ip); 
+  
+// L = left R = right
+  pinMode( LEYE, INPUT );
+  pinMode( REYE, INPUT );
+  
+// HIGH to go forward set High LOW to go forward set low
+  pinMode( LWPWM, OUTPUT);
+  pinMode( LWLOW, OUTPUT);
+  pinMode( LWHIGH, OUTPUT);
+
+  pinMode( RWLOW, OUTPUT);
+  pinMode( RWHIGH, OUTPUT);
+  pinMode( RWPWM, OUTPUT);  
+
+  pinMode(trig, OUTPUT);
+  pinMode(echo, INPUT);
+
+  pinMode(2, INPUT_PULLUP);
+  pinMode(3, INPUT_PULLUP);
+
+   //Interrupts to determine when the north poles go past the south poles on the encoder.
+  attachInterrupt(2, changeright, CHANGE); 
+  attachInterrupt(3, changeleft, CHANGE);
+}
+
+void rightwheel(int speed, int high, int low);
+void leftwheel(int speed, int high, int low);
+double computePID(double actdis);
+
+void loop() {
+distance = afstandssensor.afstandCM();
+ 
+  //Serial.println(".");
+
+ char c = client1.read();
+ if( c == 'A' || c == 'B'){
+   //Serial.write(c);
+   // Serial.println(".");
+    C = c;
+    Serial.write(C);
+ }
+// stop
+ if(C == 'B'){
+   analogWrite(LWPWM, 0);
+   analogWrite(RWPWM, 0);
+ }
+// go
+ if(C == 'A'){
+// downloaded library that does the ultrasonic
+  distance = afstandssensor.afstandCM();
+  
+  speed_modified = computePID(distance);
+  delay(0.1);
+  
+distance2=afstandssensor.afstandCM();//Initialised as an int as well
+//conversion_factor=(max_speed)/(255);
+//true_speed=(n_speed)*(conversion_factor);
+
+  
+  n_speed = speed_modified;
+// motors didn't move and whined below 30;
+  if(n_speed < 30 ){
+    n_speed = 0;
+  }
+if(n_speed > 255 ){
+  n_speed =  255;
+} 
+
+
+  {
+        
+   if(digitalRead( LEYE ) == HIGH && digitalRead( REYE ) == HIGH ){
+     //forward
+     rightwheel(n_speed, 1, 0);
+     leftwheel(n_speed, 1, 0);
+     //Serial.print("f");
+   }
+
+   if (digitalRead( LEYE ) == LOW && digitalRead( REYE ) == LOW){
+     // stop
+     rightwheel(0, 0, 0);
+     leftwheel(0, 0, 0);
+     //Serial.print("x");
+    }
+
+   /*if (digitalRead( LEYE ) == HIGH && digitalRead( REYE ) == HIGH){
+     // reverse
+     rightwheel(255, 0, 1);
+     lightwheel(255, 0, 1);
+     Serial.print("b");
+   }*/ 
+
+   if (digitalRead( LEYE ) == HIGH && digitalRead( REYE ) == LOW){
+     //right
+     rightwheel(64, 1, 0);
+     leftwheel(255, 1, 0);
+     //Serial.print("r");
+    }
+
+   if (digitalRead( LEYE ) == LOW && digitalRead( REYE ) == HIGH){
+     //left 
+     rightwheel(255, 1, 0);
+     leftwheel(64, 1, 0);
+     //Serial.println("l");
+    }
+  }
+   //Read in encoder pins
+  RENC = digitalRead(2);
+  LENC = digitalRead(3);
+  //Serial.print(LENC);
+  //Serial.println(RENC);
+  
+  //Count of the encoders
+  Serial.print("Count of right wheel: ");
+  Serial.println(countright);
+  Serial.print("Count of left wheel: ");
+  Serial.println(countleft); 
+  
+  //Rotation calculations
+  //Encoder's are placed on the back of the motor, so this is taken into account for calculations for the rotation of wheel.
+  //i.e. 1 wheel spin = 960 rotations
+  rotationright = (countright)/(120*8);
+  rotationleft = (countleft)/(120*8);
+  Serial.print("Rotation of right wheel: ");
+  Serial.println(rotationright);
+  Serial.print("Rotation of left wheel: ");
+  Serial.println(rotationleft); 
+
+   //Speed Calculations
+   currentspeed = buggyspeed(currenttime,currentdistance);
+   Serial.print("Speed: ");
+   Serial.print(currentspeed);
+   Serial.println(" cm/s");
+  
+
+  //Time and distance calculations
+   Serial.print("Total time: ");
+   Serial.println(totaltime);
+   Serial.print("Current time: ");
+   Serial.println(currenttime);
+   Serial.print("Previous time: ");
+   Serial.println(previoustime);
+   totaltime = millis();
+  //one rotation 204.2mm or 0.2mm per one magentic changes.
+  totaldistance = ((rotationleft + rotationright)/2) * (204.2);
+  Serial.print("Distance: ");
+  Serial.print(totaldistance);
+  Serial.println("mm"); 
+  
+   unsigned long ctime = totaltime;
+   //calculate distances and times every 1 second to constanly check the speed of the buggy
+    if (ctime - p1time > interval){ 
+      
+   currenttime = (totaltime - previoustime);
+   previoustime = totaltime; 
+   currentdistance = totaldistance - prevdistance;
+   prevdistance = totaldistance;
+   
+   p1time = ctime;
+
+ }
+
+obj_speed=((distance2-distance)/0.1)+currentspeed;
+client1.write(currentspeed);
+client2.write(obj_speed);
+Serial.println(currentspeed);
+ }
+  }
+ 
+
+void leftwheel(int speed, int high, int low){
+  analogWrite(LWPWM, speed);
+  digitalWrite(LWLOW, low);
+  digitalWrite(LWHIGH, high);
+}
+
+void rightwheel(int speed, int high, int low){
+  analogWrite(RWPWM, speed);
+  digitalWrite(RWLOW, low);
+  digitalWrite(RWHIGH, high);
+}
+
+double computePID(double actdis){     
+  
+        elapsedTime = (double)(totaltime - prevTime);        //compute time elapsed from previous computation
+       // Serial.println(elapsedTime);
+        error =  setdistance - actdis;                   // determine error
+        cumError += error * elapsedTime;                // compute integral
+        rateError = (error - lastError)/elapsedTime;   // compute derivative
+
+        int new_speed = kp*error + ki*cumError + kd*rateError;                //PID output               
+
+        lastError = error;                                //remember current error
+        prevTime = totaltime;                        //remember current time
+
+        return new_speed;                                        //have function return the PID output
+}
+
+//the count for the encoder functions
+void changeright(){
+  countright++;
+}
+
+void changeleft(){
+countleft++;
+}
+
+//speed of the buggy function
+float buggyspeed(unsigned long timenew, float distanceq){
+  
+  float time1 = (timenew)/1000;
+  float dis1 = distanceq/10;
+  float s = (dis1/time1);
+
+  return s; 
+}
+
+
